@@ -39,7 +39,8 @@ public:
      * @brief SharedSection Constructeur de la classe qui représente la section partagée.
      * Initialisez vos éventuels attributs ici, sémaphores etc.
      */
-    SharedSection() {
+    SharedSection()
+    : _mutex(1), _semD1(0), _semD2(0) {
         // TODO
     }
 
@@ -50,6 +51,45 @@ public:
      */
     void access(Locomotive& loco, Direction d) override {
         // TODO
+
+        _mutex.acquire();
+
+        if (_emergency) {
+            _mutex.release();
+            loco.arreter();
+            return;
+        }
+
+        if (!_occupied) {
+            _occupied = true;
+            _ownerId = loco.numero();
+            _ownerDir = d;
+            _mutex.release();
+            return;
+        }
+
+        if (_ownerId == loco.numero()) {
+            ++_errors;
+            _mutex.release();
+            return;
+        }
+
+        if (d == Direction::D1) ++_waitingD1; else ++_waitingD2;
+        _mutex.release();
+
+        loco.arreter();
+
+        if (d == Direction::D1) _semD1.acquire(); else _semD2.acquire();
+
+        _mutex.acquire();
+        if (_emergency) {
+            _mutex.release();
+            return;
+        }
+        _occupied = true;
+        _ownerId = loco.numero();
+        _ownerDir = d;
+        _mutex.release();
     }
 
     /**
@@ -59,6 +99,35 @@ public:
      */
     void leave(Locomotive& loco, Direction d) override {
         // TODO
+
+        _mutex.acquire();
+
+        if (!_occupied || _ownerId != loco.numero() || _ownerDir != d) {
+            ++_errors;
+            _mutex.release();
+            return;
+        }
+
+        _occupied = false;
+        _ownerId = -1;
+        _lastLeaveDir = d;
+
+        if (_emergency) {
+            _mutex.release();
+            return;
+        }
+
+        int &oppWaiting  = (d == Direction::D1) ? _waitingD2 : _waitingD1;
+        int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+
+        if (oppWaiting > 0) {
+            if (d == Direction::D1) { --_waitingD2; _semD2.release(); }
+            else                     { --_waitingD1; _semD1.release(); }
+        } else if (sameWaiting > 0) {
+            _pendingRelease = true;
+        }
+
+        _mutex.release();
     }
 
     /**
@@ -67,6 +136,27 @@ public:
      */
     void release(Locomotive &loco) override {
         // TODO
+
+        _mutex.acquire();
+
+        if (!_pendingRelease) {
+            ++_errors;
+            _mutex.release();
+            return;
+        }
+
+        Direction d = _lastLeaveDir;
+        int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+
+        if (sameWaiting > 0) {
+            if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
+            else                     { --_waitingD2; _semD2.release(); }
+        } else {
+            ++_errors;
+        }
+
+        _pendingRelease = false;
+        _mutex.release();
     }
 
     /**
@@ -74,6 +164,21 @@ public:
      */
     void stopAll() override {
         // TODO
+
+        _mutex.acquire();
+        _emergency = true;
+
+        int n1 = _waitingD1, n2 = _waitingD2;
+        _waitingD1 = _waitingD2 = 0;
+        _pendingRelease = false;
+
+        _occupied = false;
+        _ownerId = -1;
+
+        _mutex.release();
+
+        for (int i = 0; i < n1; ++i) _semD1.release();
+        for (int i = 0; i < n2; ++i) _semD2.release();
     }
 
     /**
@@ -82,7 +187,7 @@ public:
      */
     int nbErrors() override {
         // TODO
-        return 0;
+        return _errors;
     }
 
 private:
@@ -90,6 +195,28 @@ private:
      * Vous êtes libres d'ajouter des méthodes ou attributs
      * pour implémenter la section partagée.
      */
+
+    // Synchro
+    PcoSemaphore _mutex;
+    PcoSemaphore _semD1;
+    PcoSemaphore _semD2;
+
+    // Section d'etats
+    bool _occupied {false};
+    int  _ownerId {-1};
+    Direction _ownerDir {Direction::D1};
+
+    // Attendte de  directions
+    int _waitingD1 {0};
+    int _waitingD2 {0};
+
+    // Regle d'acces et travail d'urgence
+    bool _pendingRelease {false};
+    Direction _lastLeaveDir {Direction::D1};
+    bool _emergency {false};
+
+    // Compteur d'erreures
+    int _errors {0};
 
 };
 
