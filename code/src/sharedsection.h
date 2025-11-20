@@ -49,9 +49,8 @@ public:
      * @param Locomotive who asked access
      * @param Direction of the locomotive
      */
-    void access(Locomotive& loco, Direction d) override {
-        // TODO
-
+    void access(Locomotive& loco, Direction d) override
+    {
         _mutex.acquire();
 
         if (_emergency) {
@@ -60,15 +59,16 @@ public:
             return;
         }
 
-        if (!_occupied) {
+        const bool hasWaiters = (_waitingD1 + _waitingD2) > 0;
+        if (!_occupied && !_handoffInProgress && !hasWaiters && !_pendingRelease) {
             _occupied = true;
-            _ownerId = loco.numero();
+            _owner    = &loco;
             _ownerDir = d;
             _mutex.release();
             return;
         }
 
-        if (_ownerId == loco.numero()) {
+        if (_owner == &loco) {
             ++_errors;
             _mutex.release();
             return;
@@ -82,47 +82,42 @@ public:
         if (d == Direction::D1) _semD1.acquire(); else _semD2.acquire();
 
         _mutex.acquire();
-        if (_emergency) {
-            _mutex.release();
-            return;
-        }
+        if (_emergency) { _mutex.release(); return; }
+
         _occupied = true;
-        _ownerId = loco.numero();
+        _owner    = &loco;
         _ownerDir = d;
+        _handoffInProgress = false;
         _mutex.release();
     }
+
 
     /**
      * @brief Notify the shared section that a Locomotive has left (not freed yed).
      * @param Locomotive who left
      * @param Direction of the locomotive
      */
-    void leave(Locomotive& loco, Direction d) override {
-        // TODO
-
+    void leave(Locomotive& loco, Direction d) override
+    {
         _mutex.acquire();
 
-        if (!_occupied || _ownerId != loco.numero() || _ownerDir != d) {
-            ++_errors;
-            _mutex.release();
-            return;
+        if (!_occupied || _owner != &loco || _ownerDir != d) {
+            ++_errors; _mutex.release(); return;
         }
 
         _occupied = false;
-        _ownerId = -1;
+        _owner  = nullptr;
         _lastLeaveDir = d;
 
-        if (_emergency) {
-            _mutex.release();
-            return;
-        }
+        if (_emergency) { _mutex.release(); return; }
 
         int &oppWaiting  = (d == Direction::D1) ? _waitingD2 : _waitingD1;
         int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
 
         if (oppWaiting > 0) {
+            _handoffInProgress = true;
             if (d == Direction::D1) { --_waitingD2; _semD2.release(); }
-            else                     { --_waitingD1; _semD1.release(); }
+            else                    { --_waitingD1; _semD1.release(); }
         } else if (sameWaiting > 0) {
             _pendingRelease = true;
         }
@@ -130,27 +125,24 @@ public:
         _mutex.release();
     }
 
+
     /**
      * @brief Notify the shared section that it can now be accessed again (freed).
      * @param Locomotive who sent the notification
      */
-    void release(Locomotive &loco) override {
-        // TODO
-
+    void release(Locomotive& loco) override
+    {
         _mutex.acquire();
 
-        if (!_pendingRelease) {
-            ++_errors;
-            _mutex.release();
-            return;
-        }
+        if (!_pendingRelease) { ++_errors; _mutex.release(); return; }
 
         Direction d = _lastLeaveDir;
         int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
 
         if (sameWaiting > 0) {
+            _handoffInProgress = true;
             if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
-            else                     { --_waitingD2; _semD2.release(); }
+            else                    { --_waitingD2; _semD2.release(); }
         } else {
             ++_errors;
         }
@@ -158,6 +150,7 @@ public:
         _pendingRelease = false;
         _mutex.release();
     }
+
 
     /**
      * @brief Stop all locomotives to access this shared section
@@ -173,7 +166,7 @@ public:
         _pendingRelease = false;
 
         _occupied = false;
-        _ownerId = -1;
+        _owner = nullptr;
 
         _mutex.release();
 
@@ -203,7 +196,7 @@ private:
 
     // Section d'etats
     bool _occupied {false};
-    int  _ownerId {-1};
+    Locomotive* _owner {nullptr};
     Direction _ownerDir {Direction::D1};
 
     // Attendte de  directions
@@ -214,6 +207,7 @@ private:
     bool _pendingRelease {false};
     Direction _lastLeaveDir {Direction::D1};
     bool _emergency {false};
+    bool _handoffInProgress {false};
 
     // Compteur d'erreures
     int _errors {0};
