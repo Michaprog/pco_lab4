@@ -130,16 +130,16 @@ int cmain()
     locoBehavB = std::make_unique<LocomotiveBehavior>(locoB, sharedSection);
 
     // Démarrage des threads
-    threadA = std::thread(&Launchable::start, locoBehavA.get());
-    threadB = std::thread(&Launchable::start, locoBehavB.get());
+    locoBehavA->startThread();
+    locoBehavB->startThread();
 
     /******************
      * Attente fin    *
      *****************/
 
     // Attente de la fin des threads (ne devrait jamais arriver)
-    if (threadA.joinable()) threadA.join();
-    if (threadB.joinable()) threadB.join();
+    locoBehavA->join();
+    locoBehavB->join();
 
     //Fin de la simulation
     mettre_maquette_hors_service();

@@ -10,6 +10,7 @@
 
 #include "locomotivebehavior.h"
 #include "ctrain_handler.h"
+#include <set>
 
 // Définition des contacts pour chaque itinéraire
 // Chemin de la locomotive A (sens horaire)
@@ -17,7 +18,7 @@ static const std::vector<int> pathA = {34, 1, 5, 7, 9, 11, 19, 21, 23, 25, 27, 2
 // Chemin de la locomotive B (sens anti-horaire)
 static const std::vector<int> pathB = {31, 33, 1, 3, 5, 7, 15, 17, 19, 21, 23, 25, 27, 29};
 // Section partagée (contacts 5, 7, 19, 21, 23)
-static const std::set<int> sharedSection = {5, 7, 19, 21, 23};
+static const std::set<int> sharedSectionContacts = {5, 7, 19, 21, 23};
 // Contacts où les locomotives changent de direction
 static const std::set<int> directionChangePoints = {1, 29};
 
@@ -51,13 +52,13 @@ void LocomotiveBehavior::run()
         loco.afficherMessage(QString("Contact %1").arg(currentContact));
         
         // Vérifier si on entre dans la section partagée
-        if (sharedSection.find(currentContact) != sharedSection.end() && !inSharedSection) {
+        if (sharedSectionContacts.find(currentContact) != sharedSectionContacts.end() && !inSharedSection) {
             sharedSection->access(loco, isClockwise ? SharedSectionInterface::Direction::D1 : SharedSectionInterface::Direction::D2);
             inSharedSection = true;
             loco.afficherMessage("Entrée en section partagée");
         }
         // Vérifier si on sort de la section partagée
-        else if (inSharedSection && sharedSection.find(currentContact) == sharedSection.end()) {
+        else if (inSharedSection && sharedSectionContacts.find(currentContact) == sharedSectionContacts.end()) {
             sharedSection->leave(loco, isClockwise ? SharedSectionInterface::Direction::D1 : SharedSectionInterface::Direction::D2);
             inSharedSection = false;
             loco.afficherMessage("Sortie de la section partagée");
