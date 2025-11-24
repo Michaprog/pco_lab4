@@ -14,6 +14,16 @@
 #include "sharedsectioninterface.h"
 #include "sharedsection.h"
 
+#include <memory>
+#include <thread>
+
+// Variables globales pour la section partagée et les threads
+static std::shared_ptr<SharedSection> sharedSection;
+static std::unique_ptr<LocomotiveBehavior> locoBehavA;
+static std::unique_ptr<LocomotiveBehavior> locoBehavB;
+static std::thread threadA;
+static std::thread threadB;
+
 // Locomotives :
 // Vous pouvez changer les vitesses initiales, ou utiliser la fonction loco.fixerVitesse(vitesse);
 // Laissez les numéros des locos à 0 et 1 pour ce laboratoire
@@ -26,31 +36,23 @@ static Locomotive locoB(42 /* Numéro (pour commande trains sur maquette réelle
 //Arret d'urgence
 void emergency_stop()
 {
-    /* TODO */
-
-    afficher_message("\nSTOP!");
+    // Arrêter toutes les locomotives
+    locoA.arreter();
+    locoB.arreter();
+    
+    // Libérer la section partagée
+    if (sharedSection) {
+        sharedSection->stopAll();
+    }
+    
+    // Afficher un message d'arrêt
+    afficher_message("\nARRÊT D'URGENCE !");
 }
 
-
-//Fonction principale
-int cmain()
-{
-    /************
-     * Maquette *
-     ************/
-
-    //Choix de la maquette (A ou B)
-    selection_maquette(MAQUETTE_A /*MAQUETTE_B*/);
-
-    /**********************************
-     * Initialisation des aiguillages *
-     **********************************/
-
-    // Initialisation des aiguillages
-    // Positiion de base donnée comme exemple, vous pouvez la changer comme bon vous semble
-    // Vous devrez utiliser cette fonction pour la section partagée pour aiguiller les locos
-    // sur le bon parcours (par exemple à la sortie de la section partagée) vous pouvez l'
-    // appeler depuis vos thread des locos par ex.
+// Fonction pour initialiser les aiguillages
+void initializeSwitches() {
+    // Configuration des aiguillages pour la maquette A
+    // Ajustez ces valeurs selon votre configuration de maquette
     diriger_aiguillage(1,  TOUT_DROIT, 0);
     diriger_aiguillage(2,  DEVIE     , 0);
     diriger_aiguillage(3,  DEVIE     , 0);
@@ -75,8 +77,23 @@ int cmain()
     diriger_aiguillage(22, TOUT_DROIT, 0);
     diriger_aiguillage(23, TOUT_DROIT, 0);
     diriger_aiguillage(24, TOUT_DROIT, 0);
-
     // diriger_aiguillage(/*NUMERO*/, /*TOUT_DROIT | DEVIE*/, /*0*/);
+}
+
+// Fonction principale
+int cmain()
+{
+    /************
+     * Maquette *
+     ************/
+
+    // Choix de la maquette (A ou B)
+    selection_maquette(MAQUETTE_A);
+
+    /**********************************
+     * Initialisation des aiguillages *
+     **********************************/
+    initializeSwitches();
 
     /********************************
      * Position de départ des locos *
@@ -98,26 +115,31 @@ int cmain()
     afficher_message("Hit play to start the simulation...");
 
     /*********************
-     * Threads des locos *
+     * Section partagée  *
      ********************/
 
     // Création de la section partagée
-    std::shared_ptr<SharedSectionInterface> sharedSection = std::make_shared<SharedSection>();
+    sharedSection = std::make_shared<SharedSection>();
 
-    // Création du thread pour la loco 0
-    std::unique_ptr<Launchable> locoBehaveA = std::make_unique<LocomotiveBehavior>(locoA, sharedSection /*, autres paramètres ...*/);
-    // Création du thread pour la loco 1
-    std::unique_ptr<Launchable> locoBehaveB = std::make_unique<LocomotiveBehavior>(locoB, sharedSection /*, autres paramètres ...*/);
+    /*******************
+     * Threads des locos *
+     *******************/
 
-    // Lanchement des threads
-    afficher_message(qPrintable(QString("Lancement thread loco A (numéro %1)").arg(locoA.numero())));
-    locoBehaveA->startThread();
-    afficher_message(qPrintable(QString("Lancement thread loco B (numéro %1)").arg(locoB.numero())));
-    locoBehaveB->startThread();
+    // Création des comportements des locomotives
+    locoBehavA = std::make_unique<LocomotiveBehavior>(locoA, sharedSection);
+    locoBehavB = std::make_unique<LocomotiveBehavior>(locoB, sharedSection);
 
-    // Attente sur la fin des threads
-    locoBehaveA->join();
-    locoBehaveB->join();
+    // Démarrage des threads
+    threadA = std::thread(&Launchable::start, locoBehavA.get());
+    threadB = std::thread(&Launchable::start, locoBehavB.get());
+
+    /******************
+     * Attente fin    *
+     *****************/
+
+    // Attente de la fin des threads (ne devrait jamais arriver)
+    if (threadA.joinable()) threadA.join();
+    if (threadB.joinable()) threadB.join();
 
     //Fin de la simulation
     mettre_maquette_hors_service();
