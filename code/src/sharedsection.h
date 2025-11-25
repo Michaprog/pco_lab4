@@ -102,28 +102,42 @@ public:
         _mutex.acquire();
 
         if (!_occupied || _owner != &loco || _ownerDir != d) {
-            ++_errors; _mutex.release(); return;
+            ++_errors;
+            _mutex.release();
+            return;
         }
 
         _occupied = false;
-        _owner  = nullptr;
+        _owner = nullptr;
         _lastLeaveDir = d;
 
-        if (_emergency) { _mutex.release(); return; }
+        if (_emergency) {
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
+            _mutex.release();
+            return;
+        }
 
-        int &oppWaiting  = (d == Direction::D1) ? _waitingD2 : _waitingD1;
-        int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+        int& oppWaiting  = (d == Direction::D1) ? _waitingD2 : _waitingD1;
+        int& sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
 
         if (oppWaiting > 0) {
             _handoffInProgress = true;
             if (d == Direction::D1) { --_waitingD2; _semD2.release(); }
             else                    { --_waitingD1; _semD1.release(); }
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
         } else if (sameWaiting > 0) {
             _pendingRelease = true;
+            _awaitingReleaseFrom = &loco;
+        } else {
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
         }
 
         _mutex.release();
     }
+
 
 
     /**
@@ -134,36 +148,56 @@ public:
     {
         _mutex.acquire();
 
-        if (!_pendingRelease) { ++_errors; _mutex.release(); return; }
-
         Direction d = _lastLeaveDir;
-        int &sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+        int& sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
 
-        if (sameWaiting > 0) {
+        if (_pendingRelease) {
+            if (_awaitingReleaseFrom && _awaitingReleaseFrom != &loco) {
+                ++_errors;
+            }
+
+            if (sameWaiting > 0) {
+                _handoffInProgress = true;
+                if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
+                else                    { --_waitingD2; _semD2.release(); }
+            } else {
+                ++_errors;
+            }
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
+            _mutex.release();
+            return;
+        }
+
+        if (sameWaiting > 0 && !_handoffInProgress) {
             _handoffInProgress = true;
             if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
             else                    { --_waitingD2; _semD2.release(); }
-        } else {
-            ++_errors;
+            _mutex.release();
+            return;
         }
 
-        _pendingRelease = false;
+        ++_errors;
         _mutex.release();
     }
+
 
 
     /**
      * @brief Stop all locomotives to access this shared section
      */
-    void stopAll() override {
-        // TODO
-
+    void stopAll() override
+    {
         _mutex.acquire();
         _emergency = true;
 
         int n1 = _waitingD1, n2 = _waitingD2;
-        _waitingD1 = _waitingD2 = 0;
+        _waitingD1 = 0;
+        _waitingD2 = 0;
+
         _pendingRelease = false;
+        _awaitingReleaseFrom = nullptr;
+        _handoffInProgress = false;
 
         _occupied = false;
         _owner = nullptr;
@@ -173,6 +207,7 @@ public:
         for (int i = 0; i < n1; ++i) _semD1.release();
         for (int i = 0; i < n2; ++i) _semD2.release();
     }
+
 
     /**
      * @brief Return nbErrors
@@ -208,6 +243,8 @@ private:
     Direction _lastLeaveDir {Direction::D1};
     bool _emergency {false};
     bool _handoffInProgress {false};
+    Locomotive* _awaitingReleaseFrom {nullptr};
+
 
     // Compteur d'erreures
     int _errors {0};
