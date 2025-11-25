@@ -40,149 +40,216 @@ public:
      * Initialisez vos éventuels attributs ici, sémaphores etc.
      */
     SharedSection()
-    : _mutex(1), _semD1(0), _semD2(0), 
-      _waitingD1(0), _waitingD2(0), 
-      _inD1(false), _inD2(false),
-      _errorCount(0) {
+    : _mutex(1), _semD1(0), _semD2(0) {
+        // TODO
     }
 
     /**
-     * @brief Méthode appelée lorsqu'une locomotive souhaite accéder à la section partagée
-     * @param loco La locomotive qui demande l'accès
-     * @param d La direction de la locomotive
+     * @brief Request access to the shared section
+     * @param Locomotive who asked access
+     * @param Direction of the locomotive
      */
-    void access(Locomotive& loco, Direction d) override {
+    void access(Locomotive& loco, Direction d) override
+    {
         _mutex.acquire();
-        
-        if ((d == Direction::D1 && _inD1) || (d == Direction::D2 && _inD2)) {
-            // Already in the section in the same direction, no need to wait
+
+        if (_emergency) {
+            _mutex.release();
+            loco.arreter();
+            return;
+        }
+
+        const bool hasWaiters = (_waitingD1 + _waitingD2) > 0;
+        if (!_occupied && !_handoffInProgress && !hasWaiters && !_pendingRelease) {
+            _occupied = true;
+            _owner    = &loco;
+            _ownerDir = d;
             _mutex.release();
             return;
         }
 
-        if (d == Direction::D1) {
-            _waitingD1++;
+        if (_owner == &loco) {
+            ++_errors;
             _mutex.release();
-            _semD1.acquire();
-            _mutex.acquire();
-            _waitingD1--;
-            _inD1 = true;
-        } else {
-            _waitingD2++;
-            _mutex.release();
-            _semD2.acquire();
-            _mutex.acquire();
-            _waitingD2--;
-            _inD2 = true;
+            return;
         }
-        
+
+        if (d == Direction::D1) ++_waitingD1; else ++_waitingD2;
+        _mutex.release();
+
+        loco.arreter();
+
+        if (d == Direction::D1) _semD1.acquire(); else _semD2.acquire();
+
+        _mutex.acquire();
+        if (_emergency) { _mutex.release(); return; }
+
+        _occupied = true;
+        _owner    = &loco;
+        _ownerDir = d;
+        _handoffInProgress = false;
         _mutex.release();
     }
 
-    /**
-     * @brief Méthode appelée lorsqu'une locomotive quitte la section partagée
-     * @param loco La locomotive qui quitte la section
-     * @param d La direction de la locomotive
-     */
-    void leave(Locomotive& loco, Direction d) override {
-        _mutex.acquire();
-        
-        if (d == Direction::D1) {
-            if (!_inD1) {
-                _errorCount++;
-                _mutex.release();
-                return;
-            }
-            _inD1 = false;
-            
-            // If there are trains waiting in the opposite direction, let them pass first
-            if (_waitingD2 > 0) {
-                _semD2.release();
-            } else if (_waitingD1 > 0) {
-                // If no opposite direction, let same direction pass
-                _semD1.release();
-            } else {
-                _mutex.release();
-            }
-        } else {
-            if (!_inD2) {
-                _errorCount++;
-                _mutex.release();
-                return;
-            }
-            _inD2 = false;
-            
-            // If there are trains waiting in the opposite direction, let them pass first
-            if (_waitingD1 > 0) {
-                _semD1.release();
-            } else if (_waitingD2 > 0) {
-                // If no opposite direction, let same direction pass
-                _semD2.release();
-            } else {
-                _mutex.release();
-            }
-        }
-    }
 
     /**
-     * @brief Méthode appelée pour libérer la section partagée après un leave()
-     * @param loco La locomotive qui libère la section
+     * @brief Notify the shared section that a Locomotive has left (not freed yed).
+     * @param Locomotive who left
+     * @param Direction of the locomotive
      */
-    void release(Locomotive& loco) override {
+    void leave(Locomotive& loco, Direction d) override
+    {
         _mutex.acquire();
-        
-        // If the train was going in D1 direction, check if there are D2 trains waiting
-        if (_inD1 && _waitingD2 > 0) {
-            _semD2.release();
-        } 
-        // If the train was going in D2 direction, check if there are D1 trains waiting
-        else if (_inD2 && _waitingD1 > 0) {
-            _semD1.release();
-        }
-        // If no opposite direction trains, release the mutex
-        else {
+
+        if (!_occupied || _owner != &loco || _ownerDir != d) {
+            ++_errors;
             _mutex.release();
+            return;
         }
-    }
 
-    /**
-     * @brief Arrête toutes les locomotives qui attendent d'accéder à la section partagée
-     */
-    void stopAll() override {
-        _mutex.acquire();
-        
-        // Release all waiting locomotives
-        while (_waitingD1 > 0) {
-            _semD1.release();
-            _waitingD1--;
+        _occupied = false;
+        _owner = nullptr;
+        _lastLeaveDir = d;
+
+        if (_emergency) {
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
+            _mutex.release();
+            return;
         }
-        while (_waitingD2 > 0) {
-            _semD2.release();
-            _waitingD2--;
+
+        int& oppWaiting  = (d == Direction::D1) ? _waitingD2 : _waitingD1;
+        int& sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+
+        if (oppWaiting > 0) {
+            _handoffInProgress = true;
+            if (d == Direction::D1) { --_waitingD2; _semD2.release(); }
+            else                    { --_waitingD1; _semD1.release(); }
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
+        } else if (sameWaiting > 0) {
+            _pendingRelease = true;
+            _awaitingReleaseFrom = &loco;
+        } else {
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
         }
-        
-        _inD1 = false;
-        _inD2 = false;
+
         _mutex.release();
     }
 
+
+
     /**
-     * @brief Retourne le nombre d'erreurs de synchronisation détectées
-     * @return Le nombre d'erreurs
+     * @brief Notify the shared section that it can now be accessed again (freed).
+     * @param Locomotive who sent the notification
+     */
+    void release(Locomotive& loco) override
+    {
+        _mutex.acquire();
+
+        Direction d = _lastLeaveDir;
+        int& sameWaiting = (d == Direction::D1) ? _waitingD1 : _waitingD2;
+
+        if (_pendingRelease) {
+            if (_awaitingReleaseFrom && _awaitingReleaseFrom != &loco) {
+                ++_errors;
+            }
+
+            if (sameWaiting > 0) {
+                _handoffInProgress = true;
+                if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
+                else                    { --_waitingD2; _semD2.release(); }
+            } else {
+                ++_errors;
+            }
+            _pendingRelease = false;
+            _awaitingReleaseFrom = nullptr;
+            _mutex.release();
+            return;
+        }
+
+        if (sameWaiting > 0 && !_handoffInProgress) {
+            _handoffInProgress = true;
+            if (d == Direction::D1) { --_waitingD1; _semD1.release(); }
+            else                    { --_waitingD2; _semD2.release(); }
+            _mutex.release();
+            return;
+        }
+
+        ++_errors;
+        _mutex.release();
+    }
+
+
+
+    /**
+     * @brief Stop all locomotives to access this shared section
+     */
+    void stopAll() override
+    {
+        _mutex.acquire();
+        _emergency = true;
+
+        int n1 = _waitingD1, n2 = _waitingD2;
+        _waitingD1 = 0;
+        _waitingD2 = 0;
+
+        _pendingRelease = false;
+        _awaitingReleaseFrom = nullptr;
+        _handoffInProgress = false;
+
+        _occupied = false;
+        _owner = nullptr;
+
+        _mutex.release();
+
+        for (int i = 0; i < n1; ++i) _semD1.release();
+        for (int i = 0; i < n2; ++i) _semD2.release();
+    }
+
+
+    /**
+     * @brief Return nbErrors
+     * @return nbErrors
      */
     int nbErrors() override {
-        return _errorCount;
+        // TODO
+        return _errors;
     }
 
 private:
-    PcoSemaphore _mutex;      // Mutex pour les sections critiques
-    PcoSemaphore _semD1;      // Sémaphore pour la direction D1
-    PcoSemaphore _semD2;      // Sémaphore pour la direction D2
-    int _waitingD1;           // Nombre de locomotives en attente en direction D1
-    int _waitingD2;           // Nombre de locomotives en attente en direction D2
-    bool _inD1;               // Une locomotive est-elle dans la section en direction D1 ?
-    bool _inD2;               // Une locomotive est-elle dans la section en direction D2 ?
-    int _errorCount;          // Compteur d'erreurs de synchronisation
+    /*
+     * Vous êtes libres d'ajouter des méthodes ou attributs
+     * pour implémenter la section partagée.
+     */
+
+    // Synchro
+    PcoSemaphore _mutex;
+    PcoSemaphore _semD1;
+    PcoSemaphore _semD2;
+
+    // Section d'etats
+    bool _occupied {false};
+    Locomotive* _owner {nullptr};
+    Direction _ownerDir {Direction::D1};
+
+    // Attendte de  directions
+    int _waitingD1 {0};
+    int _waitingD2 {0};
+
+    // Regle d'acces et travail d'urgence
+    bool _pendingRelease {false};
+    Direction _lastLeaveDir {Direction::D1};
+    bool _emergency {false};
+    bool _handoffInProgress {false};
+    Locomotive* _awaitingReleaseFrom {nullptr};
+
+
+    // Compteur d'erreures
+    int _errors {0};
+
 };
+
 
 #endif // SHAREDSECTION_H
